@@ -1,0 +1,5 @@
+logs/
+*.log
+*.swp
+*.yml
+NOTES
