@@ -13,14 +13,23 @@ phewas_plot = function(summary_stats) {
     purrr::walk(outcome_types, ~phewas_plot_(summary_stats, .x))
 }
 
-phewas_plot_ = function(summary_stats, .outcome_type = "ICU") {
+phewas_plot_ = function(summary_stats, .outcome_type = "ICU", covariates = covariate_list_generator()) {
     triangle_up = 24
     triangle_down = 25
 
+    covariate_string = paste("Covariates include:", glue::glue_collapse(covariates, " + "))
+
+    n_labs = length(unique(summary_stats$ResultName))
+    n_tests = 3 # ICU / Hospitalized / Deceased
+    bonferonni = -log10(.05 / (n_labs * n_tests))
+
+    summary_stats = summary_stats %>%
+        dplyr::filter(term == "Value" & outcome_type == .outcome_type) 
+
     p = summary_stats %>%
-        dplyr::filter(term == "Value" & outcome_type == .outcome_type) %>%
         dplyr::mutate(shape = ifelse(beta > 0, triangle_up, triangle_down)) %>%
         ggplot2::ggplot(ggplot2::aes(x = ResultName, y = -log10(pvalue), shape = shape)) +
+        ggplot2::geom_hline(yintercept = bonferonni, color = "gray", linetype = "dashed", alpha = .8) +
         ggplot2::geom_point() + 
         cowplot::theme_cowplot(font_size = 9) + 
         ggplot2::scale_shape_identity() + 
@@ -28,19 +37,22 @@ phewas_plot_ = function(summary_stats, .outcome_type = "ICU") {
             axis.text.x = ggplot2::element_text(angle = 90, vjust = 0.1, hjust=1),
             axis.title.x = ggplot2::element_blank()
         ) +
+        ggplot2::labs(subtitle = covariate_string) +
         ggplot2::ggtitle(glue::glue("LabWAS of {.outcome_type} status"))
 
     
     date = stringr::str_replace_all(Sys.Date(), "-", "_")
+    job_name = return_global_job_name()
+
     ggplot2::ggsave(
-        filename = file.path(get_output_dir(), "figures", glue::glue("labwas_{.outcome_type}_{date}.pdf")),
+        filename = file.path(get_output_dir(), "figures", glue::glue("labwas_{.outcome_type}_{date}_{job_name}.pdf")),
         plot = p,
         units = "in",
         width = 10,
         height = 6
     )
     ggplot2::ggsave(
-        filename = file.path(get_output_dir(), "figures", glue::glue("labwas_{.outcome_type}_{date}.tiff")),
+        filename = file.path(get_output_dir(), "figures", glue::glue("labwas_{.outcome_type}_{date}_{job_name}.tiff")),
         plot = p,
         dpi = 300,
         units = "in",
@@ -119,15 +131,36 @@ get_labs_with_large_sample_sizes = function(labs, sample_size_threshold = 5000) 
         dplyr::pull(ResultName)
 }
 
+plot_lab_sample_sizes = function(labs) {
+    assert_not_empty(labs)
+
+    counts = labs %>%
+        dplyr::group_by(ResultName) %>%
+        dplyr::summarize(n_samples = length(unique(Deid_ID)))
+
+    p = ggplot2::ggplot(counts, ggplot2::aes(x = n_samples)) +
+        ggplot2::geom_histogram() +
+        cowplot::theme_cowplot(font_size = 15) +
+        #ggplot2::scale_x_continuous(labels = scales::comma, limits = c(0, max(counts$n_samples) + 1000)) + 
+        ggplot2::scale_x_continuous(labels = scales::comma) + 
+        ggplot2::labs(x = "sample size")
+
+    fname = file.path(get_output_dir(), "figures", "lab_sample_sizes_histogram.png")
+
+    ggplot2::ggsave(fname, p, type = "cairo", width = 7, height = 5, units = "in")
+
+}
+
 get_labs_with_large_sample_sizes = memoise::memoise(get_labs_with_large_sample_sizes, cache = memoise::cache_filesystem(get_rcache()))
 
 filter_controls = function(outcomes) {
-    label = "Unmatched Controls"
-    futile.logger::flog.info(glue::glue("before unmatched control filtering, we have {nrow(outcomes)} samples"))
+    # label = "Unmatched Controls"
+    label = "Tested Negative"
+    futile.logger::flog.info(glue::glue("before control filtering, we have {nrow(outcomes)} samples"))
     outcomes = outcomes %>%
         dplyr::filter(Outcome != label)
 
-    futile.logger::flog.info(glue::glue("after unmatched control filtering, we have {nrow(outcomes)} samples"))
+    futile.logger::flog.info(glue::glue("after control filtering, we have {nrow(outcomes)} samples"))
 
     outcomes
 }
@@ -136,21 +169,48 @@ attach_covariates_outcomes = function(labs, outcomes) {
 
     assert_not_empty(labs)
     assert_not_empty(outcomes)
+
+    covariates = covariate_list_generator()
     
     outcomes_to_attach = outcomes %>%
-        dplyr::select(Deid_ID, Age, Sex, ICU, Deceased, Hospitalized)
+        dplyr::select(Deid_ID, covariate_list_generator(), ICU, Deceased, Hospitalized)
 
     labs %>%
         dplyr::inner_join(outcomes_to_attach, by = "Deid_ID")
 }
 
+prepare_glm_formula = function(covariates) {
+    stopifnot(is.character(covariates))
+    stopifnot(length(covariates) > 1)
+
+    if(!("Value" %in% covariates)) {
+        covariates = c("Value", covariates)
+    }
+
+    covar_string = glue::glue_collapse(covariates, " + ")
+    formula = as.formula(glue::glue("outcome_value  ~ {covar_string}"))
+    return(formula)
+}
+
+covariate_list_generator = function() {
+    return(
+        c(
+            "Age",
+            "Sex",
+            "BMI",
+            "Smoker",
+            "Ethnicity"
+        )
+    )
+}
+
 
 #' expects output from attach_covariates_outcomes
-associate_labs_with_outcomes = function(labs, num_cores = 30) {
+associate_labs_with_outcomes = function(labs, covariates = covariate_list_generator(), num_cores = 30) {
 
     futile.logger::flog.info("now computing marginal summary stats")
 
-    n_covar = 3
+    n_covar = length(covariate_list_generator())
 
     # config = sparklyr::spark_config()
     # config$`sparklyr.shell.driver-memory` <- "30G"
@@ -205,6 +265,8 @@ associate_labs_with_outcomes = function(labs, num_cores = 30) {
 
     futile.logger::flog.info("now running logistic regression by lab and outcome")
 
+    glm_formula = prepare_glm_formula(covariates)
+
     summary_stats = labs_tbl %>%
         sparklyr::spark_apply(function(x) {
 
@@ -214,7 +276,8 @@ associate_labs_with_outcomes = function(labs, num_cores = 30) {
                 # model = possibly_glm(outcome_value ~ Value + Age + Sex, data = x, family = binomial(), model = FALSE)
                 print(glue::glue("x has {nrow(x)} rows"))
 
-                model = glm(outcome_value ~ Value + Age + Sex, data = x, family = binomial(), model = FALSE)
+                # model = glm(outcome_value ~ Value + Age + Sex, data = x, family = binomial(), model = FALSE)
+                model = glm(glm_formula, data = x, family = binomial(), model = FALSE)
                 tidy_model = broom::tidy(model, conf.int = FALSE)
 
                 tidy_model$n_samples = x$n_samples[1]
@@ -269,10 +332,12 @@ write_summary_stats_output = function(df) {
     
     output_dir = get_output_dir()
 
+    job_name = return_global_job_name()
+
     futile.logger::flog.info("now writing output")
 
     date = stringr::str_replace_all(Sys.Date(), "-", "_")
-    fname = file.path(output_dir, glue::glue("covid_labwas_marginal_summary_stats_{date}.tsv"))
+    fname = file.path(output_dir, glue::glue("covid_labwas_marginal_summary_stats_{date}_{job_name}.tsv"))
     readr::write_tsv(df, fname)
 
     futile.logger::flog.info("done")
@@ -280,8 +345,32 @@ write_summary_stats_output = function(df) {
     invisible(df)
 }
 
+write_config = function() {
+    config = list(
+        "covariates" = covariate_list_generator()
+    )
+
+    config_dir = file.path(get_output_dir(), "config")
+    
+    date = stringr::str_replace_all(Sys.Date(), "-", "_")
+    job_name = return_global_job_name()
+    fname = file.path(config_dir, glue::glue("config_{date}_{job_name}.json"))
+    jsonlite::write_json(config, fname)
+    invisible(config)
+}
+
+create_global_job_name = function() {
+    ._job_name <<- stringi::stri_rand_strings(1, 5, '[A-Z]')
+}
+
+return_global_job_name = function() {
+    return(._job_name)
+}
+
 
 main = function() {
+    
+    create_global_job_name()
     
     outcomes = read_in_outcome_data() %>%
         filter_controls
@@ -296,5 +385,9 @@ main = function() {
         summary_stats %>% dplyr::select(ResultName, outcome_type, term, n_samples, n_cases, beta, se, pvalue)
     )
 
+    write_config()
+
+    phewas_plot(summary_stats)
+
     return(summary_stats)
-}
+}   
