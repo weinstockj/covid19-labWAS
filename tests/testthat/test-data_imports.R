@@ -10,8 +10,8 @@ test_that("data sources exist", {
 
 test_that("labs have expected values", {
     labs = read_in_lab_data() 
-    expected_head_checksum = "6273a33fab22255d7ad6935eb4bd1ecc"
-    expected_tail_checksum = "337b995274aa578236a8f22a72beca5a"
+    expected_head_checksum = "3ed6087ca5903aae79618d03e6d42f64"
+    expected_tail_checksum = "f88848449dad2beb6c42345f87bd2443"
 
     n_rows = 100
     expect_equal(digest::digest(head(labs, n = n_rows)), expected_head_checksum)
@@ -20,7 +20,7 @@ test_that("labs have expected values", {
 
 test_that("outcomes have expected values", {
     outcomes = read_in_outcome_data() 
-    expected_checksum = "606849a7d3e2176b7fb049bafcd73cda"
+    expected_checksum = "ddf03ae3ea07ae4b712a2cb4c8f00792"
 
     expect_equal(digest::digest(outcomes), expected_checksum)
 })
