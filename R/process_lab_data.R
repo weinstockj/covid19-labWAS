@@ -7,25 +7,25 @@ create_order_lookup = function(labs) {
         dplyr::distinct(OrderName, ResultName)
 }
 
-phewas_plot = function(summary_stats, output_dir) {
+phewas_plot = function(summary_stats, output_dir, covariates = covariate_list_generator()) {
     outcome_types = unique(summary_stats$outcome_type)
 
     purrr::walk(outcome_types, ~phewas_plot_(
                                 summary_stats, 
                                 .x, 
-                                covariates = covariate_list_generator(),
+                                covariates = covariates,
                                 output_dir = output_dir
         )
     )
 }
 
-forest_plot = function(summary_stats, output_dir) {
+forest_plot = function(summary_stats, output_dir, covariates = covariate_list_generator()) {
     outcome_types = unique(summary_stats$outcome_type)
 
     purrr::walk(outcome_types, ~forest_plot_(
                                 summary_stats, 
                                 .x, 
-                                covariates = covariate_list_generator(),
+                                covariates = covariates,
                                 output_dir = output_dir
         )
     )
@@ -97,7 +97,8 @@ forest_plot_ = function(summary_stats, .outcome_type = "ICU", covariates = covar
         "Absolute Early Gran Count",
         "Absolute Basophil Count",
         "Specific Gravity (Urine)",
-        "Specific Gravity, Urine"
+        "Specific Gravity, Urine",
+        "LIPASE LEVEL"
     )
 
     summary_stats = summary_stats %>%
@@ -108,7 +109,6 @@ forest_plot_ = function(summary_stats, .outcome_type = "ICU", covariates = covar
     p = summary_stats %>%
         dplyr::mutate(ResultName = forcats::fct_reorder(ResultName, exp(beta), .desc = FALSE)) %>%
         ggplot2::ggplot(ggplot2::aes(y = ResultName, x = exp(beta), xmin = exp(conf.low), xmax = exp(conf.high))) +
-        ggplot2::geom_pointrange() + 
         #ggplot2::coord_flip() +
         cowplot::theme_cowplot(font_size = 14) + 
         ggplot2::theme(
@@ -117,9 +117,11 @@ forest_plot_ = function(summary_stats, .outcome_type = "ICU", covariates = covar
             axis.text.y = ggplot2::element_blank(),
             panel.background = ggplot2::element_rect(color = "black", size = 1)
         ) +
+        cowplot::background_grid() +
         ggplot2::xlim(0, 6) +
         ggplot2::labs(x = "OR (95% CI)") +
-        ggplot2::geom_vline(xintercept = 1, linetype = "dashed", colour = "gray", alpha = .5) 
+        ggplot2::geom_vline(xintercept = 1, linetype = "dashed", colour = "gray", size = 1.1, alpha = .7) +
+        ggplot2::geom_pointrange() 
         # ggplot2::ggtitle(glue::glue("LabWAS of {.outcome_type} status"))
 
     beta_table = summary_stats %>%
@@ -167,7 +169,8 @@ forest_plot_ = function(summary_stats, .outcome_type = "ICU", covariates = covar
         plot = table_and_plot,
         units = "in",
         width = 12,
-        height = 12
+        # height = 12
+        height = 20
     )
 }
 
@@ -343,12 +346,12 @@ attach_covariates_outcomes = function(labs, outcomes, type = "prognostic") {
     assert_not_empty(labs)
     assert_not_empty(outcomes)
 
-    valid_types = c("prognostic", "susceptibility")
+    valid_types = c("prognostic", "ordinal_prognostic", "susceptibility")
     type = match.arg(type, valid_types)
 
     covariates = covariate_list_generator()
     
-    if(type == "prognostic") {
+    if(type %in% c("prognostic", "ordinal_prognostic")) {
         outcomes_to_attach = outcomes %>%
             dplyr::select(Deid_ID, covariate_list_generator(), ICU, Deceased, Hospitalized)
     } else {
@@ -390,10 +393,24 @@ covariate_list_generator = function() {
     )
 }
 
+ordinal_covariate_list_generator = function() {
+    return(
+        c(
+            "Age",
+            "Sex",
+            "BMI",
+            # "Ethnicity",
+            "popden10",
+            "NeighborhoodSocioeconomicDisadvantageIndex",
+            "ComorbidityScore"
+        )
+    )
+}
+
 
 #' expects output from attach_covariates_outcomes
 associate_labs_with_outcomes = function(labs, covariates = covariate_list_generator(), type = "prognostic", num_cores = 30) {
-    valid_types = c("prognostic", "susceptibility")
+    valid_types = c("prognostic", "susceptibility", "ordinal_prognostic")
     type = match.arg(type, valid_types)
 
     assert_not_empty(labs)
@@ -418,13 +435,38 @@ associate_labs_with_outcomes = function(labs, covariates = covariate_list_genera
     # future::plan(future::multiprocess, workers = num_cores)
 
 
-    # browser()
     if(type == "prognostic") {
         labs = labs %>%
             tidyr::gather(key = outcome_type, value = outcome_value, ICU:Hospitalized) %>%
             dplyr::mutate(
                 outcome_value = ifelse(is.na(outcome_value), FALSE, outcome_value),
                 outcome_value = as.integer(outcome_value)
+            ) 
+    } else if(type == "ordinal_prognostic") {
+        labs = labs %>%
+            dplyr::mutate(
+                # outcome_value = case_when(
+                #    as.integer(Deceased) == 1 ~ "Deceased", 
+                #    as.integer(ICU) == 1 ~ "ICU", 
+                #    as.integer(Hospitalized) == 1 ~ "Hospitalized", 
+                #    TRUE ~ "None"
+                # ),
+                outcome_value = case_when(
+                   as.integer(Deceased) == 1 | as.integer(ICU) == 1 ~ "ICU or Deceased", 
+                   as.integer(Hospitalized) == 1 ~ "Hospitalized", 
+                   TRUE ~ "None"
+                ),
+                # outcome_value = factor(
+                #     outcome_value,
+                #     ordered = TRUE,
+                #     levels = c("None", "Hospitalized", "ICU", "Deceased")
+                # ),
+                outcome_value = factor(
+                    outcome_value,
+                    ordered = TRUE,
+                    levels = c("None", "Hospitalized", "ICU or Deceased")
+                ),
+                outcome_type = "ordinal_prognostic"
             ) 
     } else {
         labs = labs %>%
@@ -438,12 +480,21 @@ associate_labs_with_outcomes = function(labs, covariates = covariate_list_genera
     # labs_tbl = sparklyr::copy_to(sc, labs, name = "labs", repartition = num_cores, overwrite = TRUE)
 
     # lab_summary = labs_tbl %>%
-    lab_summary = labs %>%
-        dplyr::filter(!is.na(Age) & !is.na(Sex) & !is.na(Value)) %>%
-        dplyr::group_by(ResultName, outcome_type) %>%
-        dplyr::summarize(n_samples = dplyr::n(), n_cases = sum(outcome_value)) %>%
-        dplyr::filter(n_samples >= 300 & n_cases >= 20) %>%
-        dplyr::ungroup(.)
+    if(type == "ordinal_prognostic") {
+        lab_summary = labs %>%
+            dplyr::filter(!is.na(Age) & !is.na(Sex) & !is.na(Value)) %>%
+            dplyr::group_by(ResultName, outcome_type) %>%
+            dplyr::summarize(n_samples = dplyr::n(), n_cases = sum(outcome_value != "None")) %>%
+            dplyr::filter(n_samples >= 300 & n_cases >= 20) %>%
+            dplyr::ungroup(.)
+    } else {
+        lab_summary = labs %>%
+            dplyr::filter(!is.na(Age) & !is.na(Sex) & !is.na(Value)) %>%
+            dplyr::group_by(ResultName, outcome_type) %>%
+            dplyr::summarize(n_samples = dplyr::n(), n_cases = sum(outcome_value)) %>%
+            dplyr::filter(n_samples >= 300 & n_cases >= 20) %>%
+            dplyr::ungroup(.)
+    }
         
     futile.logger::flog.info("now filtering by case count")
 
@@ -457,7 +508,15 @@ associate_labs_with_outcomes = function(labs, covariates = covariate_list_genera
     futile.logger::flog.info("now running logistic regression by lab and outcome")
 
     glm_formula = prepare_glm_formula(covariates)
-    possibly_glm = purrr::possibly(glm, otherwise = NULL)
+
+    if(type == "ordinal_prognostic") {
+        possibly_regression = purrr::possibly(ordinal::clm, otherwise = NULL)
+        possibly_regression = purrr::partial(possibly_regression, control = ordinal::clm.control(method = "optim")) # method = "Newton" is the default, frequently does not converge
+    } else {
+        possibly_regression = purrr::possibly(glm, otherwise = NULL)
+        possibly_regression = purrr::partial(possibly_regression, family = binomial())
+    }
+
     possibly_tidy = purrr::possibly(broom::tidy, otherwise = NULL)
 
     # browser()
@@ -490,12 +549,12 @@ associate_labs_with_outcomes = function(labs, covariates = covariate_list_genera
     future::plan(future::multiprocess, workers = num_cores)
 
     summary_stats = labs_tbl %>%
-        dplyr::group_by(ResultName, outcome_type) %>%
+        dplyr::group_by(ResultName, outcome_type, n_samples, n_cases) %>%
         tidyr::nest(.) %>%
         dplyr::mutate(
-            n_samples = purrr::map_int(data, nrow),
-            n_cases = purrr::map_int(data, ~sum(as.integer(.x$outcome_value))),
-            tidy_model = furrr::future_map(data, ~possibly_glm(glm_formula, data = .x, family = binomial()) %>% possibly_tidy(conf.int = TRUE))
+            # n_samples = purrr::map_int(data, nrow),
+            # n_cases = purrr::map_int(data, ~sum(as.integer(.x$outcome_value))),
+            tidy_model = furrr::future_map(data, ~possibly_regression(glm_formula, data = .x) %>% possibly_tidy(conf.int = TRUE))
             # tidy_model = furrr::future_map(model, ~possibly_tidy(.x, conf.int = TRUE)),
             # tidy_model = purrr::map(model, ~possibly_tidy(.x, conf.int = TRUE)),
         ) %>%
@@ -535,6 +594,10 @@ get_prognostic_output_dir = function() {
     file.path(get_output_dir(), "prognostic")
 }
 
+get_ordinal_prognostic_output_dir = function() {
+    file.path(get_output_dir(), "ordinal_prognostic")
+}
+
 get_susceptibility_output_dir = function() {
     file.path(get_output_dir(), "susceptibility")
 }
@@ -568,11 +631,11 @@ cache_lab_data_into_rds = function(labs, output_dir) {
     saveRDS(labs, fname)
 }
 
-write_config = function(output_dir) {
+write_config = function(output_dir, covariates = covariate_list_generator()) {
     date = return_date_format()
 
     config = list(
-        "covariates" = covariate_list_generator(),
+        "covariates" = covariates,
         "date"       = date,
         "lab_data_file_name" = get_lab_data_location(),
         "outcome_data_file_name" = get_outcome_data_location()
@@ -661,4 +724,39 @@ main_susceptibility = function() {
     forest_plot(summary_stats, output_dir)
 
     return(summary_stats)
+}
+
+main_ordinal_prognostic = function() {
+    output_dir = get_ordinal_prognostic_output_dir()
+
+    create_global_job_name()
+    
+    outcomes = read_in_outcome_data() %>%
+        filter_case_only()
+
+    labs = read_in_lab_data() %>%
+        filter_labs_based_on_diagnosis_date(outcomes, end_of_window = 365 * 5) %>%
+        summarize_lab_data()
+
+    summary_stats = labs %>%
+        attach_covariates_outcomes(outcomes, type = "ordinal_prognostic") %>%
+        tidyr::drop_na(ordinal_covariate_list_generator()) %>%
+        filter_to_labs_with_large_sample_sizes(500) %>%
+        associate_labs_with_outcomes(covariates = ordinal_covariate_list_generator(), type = "ordinal_prognostic")
+
+    write_summary_stats_output(
+        summary_stats %>% dplyr::select(ResultName, outcome_type, term, n_samples, n_cases, beta, se, pvalue),
+        output_dir
+    )
+
+    cache_lab_data_into_rds(labs, output_dir)
+
+    write_config(output_dir, ordinal_covariate_list_generator())
+
+    phewas_plot(summary_stats, output_dir, ordinal_covariate_list_generator())
+    forest_plot(summary_stats, output_dir, ordinal_covariate_list_generator())
+
+
+    return(summary_stats)
+
 }
