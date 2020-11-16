@@ -4,7 +4,12 @@
 \alias{associate_labs_with_outcomes}
 \title{expects output from attach_covariates_outcomes}
 \usage{
-associate_labs_with_outcomes(labs)
+associate_labs_with_outcomes(
+  labs,
+  covariates = covariate_list_generator(),
+  type = "prognostic",
+  num_cores = 30
+)
 }
 \description{
 expects output from attach_covariates_outcomes
