@@ -1,4 +1,6 @@
 logs/
+debug/
+*.txt
 *.log
 *.swp
 *.yml
