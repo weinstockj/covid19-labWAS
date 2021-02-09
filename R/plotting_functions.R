@@ -119,7 +119,8 @@ forest_plot_ = function(summary_stats, .outcome_type = "ICU", covariates = covar
 
     p = summary_stats %>%
         dplyr::mutate(ResultName = forcats::fct_reorder(ResultName, exp(beta), .desc = FALSE)) %>%
-        ggplot2::ggplot(ggplot2::aes(y = ResultName, x = exp(beta), xmin = exp(conf.low), xmax = exp(conf.high), color = `pvalue < bonferroni`)) +
+        ggplot2::ggplot(ggplot2::aes(y = ResultName, x = exp(beta), xmin = exp(conf.low), xmax = exp(conf.high))) +
+        # ggplot2::ggplot(ggplot2::aes(y = ResultName, x = exp(beta), xmin = exp(conf.low), xmax = exp(conf.high), color = `pvalue < bonferroni`)) +
         #ggplot2::coord_flip() +
         cowplot::theme_cowplot(font_size = 14) + 
         ggplot2::theme(
@@ -131,7 +132,8 @@ forest_plot_ = function(summary_stats, .outcome_type = "ICU", covariates = covar
         ) +
         cowplot::background_grid() +
         # ggplot2::xlim(0, 6.5) +
-        ggplot2::xlim(0.0, xlim_max) +
+        ggplot2::xlim(0.0, log2(xlim_max)) +
+        ggplot2::scale_x_continuous(trans = "log2", breaks = scales::pretty_breaks(n = 6)) +
         ggplot2::labs(x = "OR (95% CI)") +
         ggplot2::geom_vline(xintercept = 1, colour = "black", size = 1.2, alpha = .7) +
         ggplot2::geom_pointrange() 
@@ -142,19 +144,20 @@ forest_plot_ = function(summary_stats, .outcome_type = "ICU", covariates = covar
         add_CI_label %>%
         ggplot2::ggplot(data = ., ggplot2::aes(y = ResultName)) +
             ggplot2::geom_text(ggplot2::aes(x = .01, label = ResultName, hjust = 0)) +
-            ggplot2::geom_text(ggplot2::aes(x = 3, label = ci_label)) +
+            ggplot2::geom_text(ggplot2::aes(x = 3.5, label = ci_label)) +
             ggplot2::theme_void() +
             ggplot2::theme(plot.margin = ggplot2::margin(0, 0, 0, 0, "cm")) +
             ggplot2::xlim(0, 4) +
-            ggplot2::annotate(geom = 'segment', y = Inf, yend = Inf, color = 'black', x = 2.5, xend = 3.5, size = 1) +
-            ggplot2::ggtitle("                                                        OR (95% CI)")
+            ggplot2::annotate(geom = 'segment', y = Inf, yend = Inf, color = 'black', x = 3.0, xend = 4.0, size = 1) +
+            ggplot2::ggtitle("                                                                    OR (95% CI)")
             # ggplot2::annotation_custom(grid::textGrob("OR (95% CI)"), xmin = 3, xmax = 4, ymin = 40, ymax = 40)
             # cowplot::theme_minimal_hgrid()
 
     pvalue_table = summary_stats %>%
         dplyr::mutate(ResultName = forcats::fct_reorder(ResultName, exp(beta), .desc = FALSE)) %>%
         dplyr::mutate(
-            pvalue_label = scales::scientific(pvalue, digits = 2)
+            pvalue_label = scales::scientific(pvalue, digits = 2),
+            pvalue_label = dplyr::if_else(`pvalue < bonferroni`, glue::glue("{pvalue_label}*"), pvalue_label)
         ) %>%
         ggplot2::ggplot(data = ., ggplot2::aes(y = ResultName)) +
             ggplot2::geom_text(ggplot2::aes(x = .2, label = pvalue_label)) +
