@@ -10,6 +10,24 @@ get_outcome_data_location = function() {
     "/net/junglebook/michiganmedicine/MichiganMedicine_COVID19DATA_SIMPLIFIED_20200908.txt"
 }
 
+get_lab_data_lookup_location = function() {
+    "/net/mgi/covid_labWAS/scripts/covidLabWASanalysis/lab_name_lookup_table.csv"
+}
+
+rename_labs = function(df) {
+
+    lookup_table = vroom::vroom(get_lab_data_lookup_location()) %>%
+        dplyr::mutate(ResultName = tolower(name)) %>%
+        dplyr::select(-name)
+
+    assert_not_empty(lookup_table)
+
+    df %>% 
+        dplyr::inner_join(lookup_table, by = "ResultName") %>%
+        dplyr::select(-ResultName) %>%
+        dplyr::rename(ResultName = new_label)
+}
+
 lower_case_lab_names = function(df) {
     assert_not_empty(df)
     stopifnot("ResultName" %in% names(df))
@@ -17,6 +35,7 @@ lower_case_lab_names = function(df) {
     df %>%
         dplyr::mutate(ResultName = tolower(ResultName))
 }
+
 
 get_labs_to_exclude = function() {
     c(
@@ -44,6 +63,8 @@ read_in_lab_data = function() {
     labs = lower_case_lab_names(labs)
 
     labs = exclude_labs(labs)
+
+    labs = rename_labs(labs)
 
     return(labs)
 }
