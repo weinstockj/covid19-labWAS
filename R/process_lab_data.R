@@ -7,6 +7,33 @@ create_order_lookup = function(labs) {
         dplyr::distinct(OrderName, ResultName)
 }
 
+create_supplement = function(summary_stats, output_dir) {
+
+    summary_stats = filter_summary_stats_to_labs(summary_stats) %>%   
+        dplyr::select(ResultName, outcome_type, term, n_samples, n_cases, beta, se, pvalue) %>%
+        dplyr::mutate(
+            dplyr::across(c(beta, se), ~scales::number(.x, accuracy = 0.01)),
+            pvalue = scales::scientific(pvalue)
+        )
+
+    hospitalized = summary_stats %>%
+        dplyr::filter(outcome_type == "Hospitalized") %>%
+        dplyr::select(-outcome_type, -term)
+
+    icu = summary_stats %>%
+        dplyr::filter(outcome_type == "ICU") %>%
+        dplyr::select(-outcome_type, -term)
+
+    deceased = summary_stats %>%
+        dplyr::filter(outcome_type == "Deceased") %>%
+        dplyr::select(-outcome_type, -term)
+
+    readr::write_tsv(hospitalized, file.path(output_dir, "hospitalized_supplement.tsv"))
+    readr::write_tsv(icu, file.path(output_dir, "icu_supplement.tsv"))
+    readr::write_tsv(deceased, file.path(output_dir, "deceased_supplement.tsv"))
+
+}
+
 summarize_lab_data = function(labs, inverse_normal_transform = TRUE, indicator = FALSE) {
     # takes 2 minutes without spark or previous cache
     assert_not_empty(labs)
@@ -690,7 +717,6 @@ main_ordinal_prognostic = function() {
 
     phewas_plot(summary_stats, output_dir, ordinal_covariate_list_generator())
     forest_plot(summary_stats, output_dir, ordinal_covariate_list_generator())
-
 
     return(summary_stats)
 
