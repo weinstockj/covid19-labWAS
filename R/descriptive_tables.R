@@ -74,7 +74,7 @@ lab_sample_size_table = function(labs_to_include, years_back = 5L) {
     
     labs = read_in_lab_data() %>%
         filter_labs_based_on_diagnosis_date(outcomes, end_of_window = 365 * years_back) %>%
-        summarize_lab_data()
+        summarize_lab_data(inverse_normal_transform = FALSE)
 
     expanded_outcomes = expanded_outcomes %>%
         dplyr::inner_join(labs) %>%
@@ -82,6 +82,7 @@ lab_sample_size_table = function(labs_to_include, years_back = 5L) {
 
     total_cases = sum(outcomes$has_covid)
 
+    # need a column for all COVID+, i.e., not stratified by outcome status
     case_counts = outcomes %>%
         dplyr::inner_join(labs) %>%
         dplyr::filter(tolower(ResultName) %in% tolower(labs_to_include)) %>%
@@ -89,12 +90,51 @@ lab_sample_size_table = function(labs_to_include, years_back = 5L) {
         dplyr::filter(has_covid) %>%
         dplyr::mutate(
             prop = scales::percent(n / {{total_cases}}, accuracy = 0.1),
-            label = glue::glue("{n} ({prop})")
+            sample_size_label = glue::glue("{n} ({prop})")
         ) %>%
-        dplyr::select(-has_covid, -prop) %>%
-        dplyr::rename(`COVID+` = label, `COVID+ n` = n) 
+        dplyr::select(-has_covid, -prop)
 
-    expanded_outcomes %>%
+    case_means = outcomes %>%
+        dplyr::inner_join(labs) %>%
+        dplyr::filter(tolower(ResultName) %in% tolower(labs_to_include)) %>%
+        dplyr::filter(has_covid) %>%
+        dplyr::group_by(ResultName) %>%
+        dplyr::summarize(
+            mean = scales::number(mean(Value, na.rm = TRUE), accuracy = 0.01),
+            sd = scales::number(sd(Value, na.rm = TRUE), accuracy = 0.01),
+            mean_label = glue::glue("{mean} ({sd})")
+        ) %>%
+        dplyr::select(ResultName, mean_label) %>%
+        dplyr::ungroup(.)
+
+    case_counts = case_counts %>%
+        dplyr::inner_join(case_means, by = "ResultName") %>%
+        dplyr::mutate(sample_size_label = glue::glue("{mean_label}, {sample_size_label}")) %>%
+        dplyr::select(-mean_label) %>%
+        dplyr::rename(`COVID+` = sample_size_label, `COVID+ n` = n) 
+
+    # now calculate stratified by outcome type
+    lab_means = expanded_outcomes %>%
+        dplyr::inner_join(labs) %>%
+        dplyr::filter(tolower(ResultName) %in% tolower(labs_to_include)) %>%
+        dplyr::group_by(ResultName, outcome_value) %>%
+        dplyr::summarize(
+            mean = scales::number(mean(Value, na.rm = TRUE), accuracy = 0.01),
+            sd = scales::number(sd(Value, na.rm = TRUE), accuracy = 0.01),
+            mean_label = glue::glue("{mean} ({sd})")
+        ) %>%
+        dplyr::select(ResultName, outcome_value, mean_label) %>%
+        dplyr::ungroup(.)
+
+    lab_units = labs %>%
+        dplyr::filter(tolower(ResultName) %in% tolower(labs_to_include)) %>%
+        dplyr::group_by(ResultName) %>%
+        tidyr::drop_na(Unit) %>%
+        dplyr::summarize(Unit = Unit[1])
+
+    # browser()
+
+    long_table_format = expanded_outcomes %>%
         dplyr::inner_join(outcome_value_counts, by = "outcome_value") %>%
         dplyr::group_by(ResultName, outcome_value, n) %>%
         dplyr::summarize(nn = dplyr::n()) %>%
@@ -106,11 +146,20 @@ lab_sample_size_table = function(labs_to_include, years_back = 5L) {
         dplyr::inner_join(case_counts, by = "ResultName") %>%
         dplyr::ungroup(.) %>%
         dplyr::select(-n, -nn, -prop) %>%
-        dplyr::rename(`Lab trait` = ResultName) %>%
+        dplyr::inner_join(lab_means, by = c("ResultName", "outcome_value")) %>%
+        dplyr::left_join(lab_units, by = "ResultName") %>%
+        dplyr::mutate(
+            ResultName = glue::glue("{ResultName} ({Unit})"),
+            label = glue::glue("{mean_label}, {label}")
+        ) %>%
+        dplyr::select(-mean_label, -Unit) %>%
+        dplyr::rename(`Lab trait` = ResultName)
+
+    long_table_format %>%
         tidyr::spread(outcome_value, label) %>%
         dplyr::arrange(desc(`COVID+ n`)) %>%
         dplyr::select(-`COVID+ n`) %>%
         flextable::flextable(.) %>%
-        flextable::save_as_docx(path = file.path(get_output_dir(), "table2_with_prop.docx"))
+        flextable::save_as_docx(path = file.path(get_output_dir(), "table2_with_prop_and_mean.docx"))
 
 }
